@@ -195,26 +195,38 @@ class PublishWorker(QThread):
     def run(self):
         completed = False
         try:
-            self.status.emit("正在生成首轮图片")
-            product_file_sets = self.prepare_product_file_pipeline()
-            self.status.emit("正在上架")
             self.playwright = sync_playwright().start()
-            self.automation = BrowserAutomation(
-                self.playwright,
-                product_root_dir=self.settings["product_root_dir"],
-                cookies_file=self.settings["cookies_file"],
-                viewport_width=self.settings["viewport_width"],
-                viewport_height=self.settings["viewport_height"],
-                pause_event=self.pause_event,
-                stop_event=self.stop_event,
-                opportunity_tab=self.settings["opportunity_tab"],
-                category_path=self.settings["category_path"],
-                publish_category_path=self.settings["publish_category_path"],
-                product_file_sets=product_file_sets,
-                common_mark_image_file=self.settings.get("common_mark_image_file", ""),
-                log=lambda message: self.log.emit(f"[自动化] {message}"),
-            )
-            self.automation.run()
+            total_rounds = int(self.settings.get("upload_rounds", 1))
+            for round_index in range(1, total_rounds + 1):
+                self.ensure_not_cancelled()
+                for goods in self.goods_list:
+                    goods["_output_round"] = round_index
+                self.status.emit(f"正在生成第 {round_index}/{total_rounds} 轮图片")
+                product_file_sets = self.prepare_product_file_pipeline()
+                self.status.emit(f"正在上架第 {round_index}/{total_rounds} 轮")
+                self.automation = BrowserAutomation(
+                    self.playwright,
+                    product_root_dir=self.settings["product_root_dir"],
+                    cookies_file=self.settings["cookies_file"],
+                    viewport_width=self.settings["viewport_width"],
+                    viewport_height=self.settings["viewport_height"],
+                    pause_event=self.pause_event,
+                    stop_event=self.stop_event,
+                    opportunity_tab=self.settings["opportunity_tab"],
+                    category_path=self.settings["category_path"],
+                    publish_category_path=self.settings["publish_category_path"],
+                    product_file_sets=product_file_sets,
+                    common_mark_image_file=self.settings.get("common_mark_image_file", ""),
+                    log=lambda message: self.log.emit(f"[自动化] {message}"),
+                )
+                self.automation.run()
+                self.automation.cleanup_temp_files()
+                self.automation.close()
+                self.automation = None
+                if self.generation_executor is not None:
+                    self.generation_executor.shutdown(wait=True, cancel_futures=False)
+                    self.generation_executor = None
+                self.log.emit(f"第 {round_index}/{total_rounds} 轮已完成")
             completed = True
             self.status.emit("已完成")
             self.finished.emit("所有勾选商品已完成生图和上架")

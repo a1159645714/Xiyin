@@ -373,6 +373,7 @@ class MainWindow(FluentWindow):
         self.common_mark_image_edit = QLineEdit()
         self.viewport_width_edit = QLineEdit(str(VIEWPORT_WIDTH))
         self.viewport_height_edit = QLineEdit(str(VIEWPORT_HEIGHT))
+        self.upload_rounds_edit = QLineEdit("1")
         self.store_combo = NoWheelComboBox()
         self.store_combo.addItems(STORE_TYPE_OPTIONS)
         self.store_combo.currentTextChanged.connect(self.on_store_changed)
@@ -388,12 +389,14 @@ class MainWindow(FluentWindow):
         form.addWidget(self.viewport_width_edit, 4, 1)
         form.addWidget(QLabel("浏览器高度"), 4, 2)
         form.addWidget(self.viewport_height_edit, 4, 3)
-        form.addWidget(QLabel("店铺类型"), 5, 0)
-        form.addWidget(self.store_combo, 5, 1)
-        form.addWidget(QLabel("机会页签"), 5, 2)
-        form.addWidget(self.opportunity_combo, 5, 3)
-        form.addWidget(QLabel("发布类目路径"), 6, 0)
-        form.addWidget(self.publish_category_edit, 6, 1, 1, 3)
+        form.addWidget(QLabel("上传轮数"), 5, 0)
+        form.addWidget(self.upload_rounds_edit, 5, 1)
+        form.addWidget(QLabel("店铺类型"), 6, 0)
+        form.addWidget(self.store_combo, 6, 1)
+        form.addWidget(QLabel("机会页签"), 6, 2)
+        form.addWidget(self.opportunity_combo, 6, 3)
+        form.addWidget(QLabel("发布类目路径"), 7, 0)
+        form.addWidget(self.publish_category_edit, 7, 1, 1, 3)
         layout.addLayout(form)
 
         self.category_frame = QFrame()
@@ -1175,6 +1178,7 @@ class MainWindow(FluentWindow):
         self.ai_generate_prompt_checkbox.setChecked(bool(self.settings.get("ai_generate_prompt", True)))
         self.viewport_width_edit.setText(str(self.settings.get("viewport_width", VIEWPORT_WIDTH)))
         self.viewport_height_edit.setText(str(self.settings.get("viewport_height", VIEWPORT_HEIGHT)))
+        self.upload_rounds_edit.setText(str(self.settings.get("upload_rounds", 1)))
         self.opportunity_combo.setCurrentText(str(self.settings.get("opportunity_tab", OPPORTUNITY_TAB_OPTIONS[0])))
         store_type = str(self.settings.get("store_type", TOY_STORE_TYPE))
         if store_type not in STORE_TYPE_OPTIONS:
@@ -1229,6 +1233,7 @@ class MainWindow(FluentWindow):
             "ai_generate_prompt": self.ai_generate_prompt_checkbox.isChecked(),
             "viewport_width": self.viewport_width_edit.text().strip(),
             "viewport_height": self.viewport_height_edit.text().strip(),
+            "upload_rounds": self.upload_rounds_edit.text().strip() or "1",
             "opportunity_tab": self.opportunity_combo.currentText(),
             "store_type": self.store_combo.currentText(),
             "store_category_paths": store_category_paths,
@@ -1344,6 +1349,9 @@ class MainWindow(FluentWindow):
             raise ValueError("请填写发布类目路径")
         width = int(self.viewport_width_edit.text().strip())
         height = int(self.viewport_height_edit.text().strip())
+        upload_rounds = int(self.upload_rounds_edit.text().strip() or "1")
+        if upload_rounds < 1 or upload_rounds > 100:
+            raise ValueError("上传轮数必须在 1 到 100 之间")
         if width < 800 or height < 600:
             raise ValueError("浏览器宽高不能小于 800 x 600")
         if common_mark_image_file and not os.path.isfile(common_mark_image_file):
@@ -1370,6 +1378,7 @@ class MainWindow(FluentWindow):
             "ai_generate_prompt": generate_prompt,
             "viewport_width": width,
             "viewport_height": height,
+            "upload_rounds": upload_rounds,
             "opportunity_tab": self.opportunity_combo.currentText(),
             "category_path": category_path,
             "publish_category_path": publish_category_path,

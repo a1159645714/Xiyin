@@ -90,6 +90,13 @@ def sanitize_folder_name(value: str) -> str:
 
 def get_goods_folder(goods: dict) -> Path:
     goods_id = sanitize_folder_name(get_goods_id(goods) or "unknown_goods")
+    round_value = goods.get("_output_round")
+    if round_value:
+        try:
+            round_name = f"round_{int(round_value):03d}"
+        except (TypeError, ValueError):
+            round_name = f"round_{sanitize_folder_name(str(round_value))}"
+        return OUTPUT_DIR / round_name / goods_id
     return OUTPUT_DIR / goods_id
 
 
