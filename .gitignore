@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+app_settings.json
+cookies.json
+playwright_chrome_profile/
+output/
+config_profiles/
+.idea/
+*.log
+*.tmp
+*.zip
+.DS_Store
