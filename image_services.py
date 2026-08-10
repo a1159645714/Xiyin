@@ -5,6 +5,7 @@ import io
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -368,17 +369,29 @@ def generate_ai_crops_for_goods(
         log_handler(
             f"正在调用对话模型: {provider_label} / {chat_model}，正在生成商品标题和专属图片提示词"
         )
+        chat_error = None
+        for attempt in range(1, 4):
+            try:
+                generated_content = generate_product_content(
+                    image_path=source_path,
+                    product_name=product_name,
+                    goods=goods,
+                    product_config=product_config or {},
+                    reference_image_paths=reference_image_paths,
+                    provider=chat_provider,
+                    token=chat_token,
+                    model=chat_model,
+                )
+                chat_error = None
+                break
+            except Exception as error:
+                chat_error = error
+                log_handler(f"对话模型第 {attempt}/3 次调用失败: {error}")
+                if attempt < 3:
+                    time.sleep(2)
+        if chat_error is not None:
+            raise RuntimeError(f"对话模型连续 3 次调用失败: {chat_error}") from chat_error
         try:
-            generated_content = generate_product_content(
-                image_path=source_path,
-                product_name=product_name,
-                goods=goods,
-                product_config=product_config or {},
-                reference_image_paths=reference_image_paths,
-                provider=chat_provider,
-                token=chat_token,
-                model=chat_model,
-            )
             if generate_title and generated_content.get("title"):
                 goods["_ai_generated_title"] = generated_content["title"]
                 log_handler(f"对话模型已返回商品标题: {generated_content['title']}")
@@ -388,7 +401,7 @@ def generate_ai_crops_for_goods(
                     f"对话模型已返回完整九宫格提示词: {generated_content['image_prompt']}"
                 )
         except Exception as error:
-            log_handler(f"对话模型生成商品内容失败，将回退到默认内容: {error}")
+            raise RuntimeError(f"对话模型返回内容处理失败: {error}") from error
 
     final_prompt = build_core_prompt(product_name)
     if generate_prompt and generated_content.get("image_prompt"):
@@ -404,15 +417,28 @@ def generate_ai_crops_for_goods(
 
     provider_label = AI_PROVIDER_CONFIGS.get(ai_provider, AI_PROVIDER_CONFIGS["geeknow"])["label"]
     log_handler(f"正在调用图片模型: {provider_label} / {ai_model}，正在生成原创展示图...")
-    response = edit_image_file(
-        source_path,
-        prompt=final_prompt,
-        provider=ai_provider,
-        token=ai_token,
-        model=ai_model,
-    )
+    response = None
+    image_error = None
+    for attempt in range(1, 4):
+        try:
+            response = edit_image_file(
+                source_path,
+                prompt=final_prompt,
+                provider=ai_provider,
+                token=ai_token,
+                model=ai_model,
+            )
+            response.raise_for_status()
+            image_error = None
+            break
+        except Exception as error:
+            image_error = error
+            log_handler(f"图片模型第 {attempt}/3 次调用失败: {error}")
+            if attempt < 3:
+                time.sleep(3)
+    if image_error is not None or response is None:
+        raise RuntimeError(f"图片模型连续 3 次调用失败: {image_error}") from image_error
     (folder / "ai_response.json").write_text(response.text, encoding="utf-8")
-    response.raise_for_status()
 
     output_path = folder / "ai_generated.png"
     if not save_ai_image_response(response, output_path):
