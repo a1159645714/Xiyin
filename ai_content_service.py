@@ -86,6 +86,14 @@ def _extract_quantity(text: str) -> str:
     return ""
 
 
+def _normalize_quantity_for_listing(quantity: str) -> str:
+    try:
+        value = int(str(quantity or "").strip())
+    except (TypeError, ValueError):
+        return "5"
+    return str(min(9, max(5, value)))
+
+
 def _strip_quantity_expressions(title: str) -> str:
     patterns = (
         r"(?<!\d)\d+\s*(?:pcs?|pieces?|packs?|sets?)\b",
@@ -106,10 +114,9 @@ def _normalize_listing_title(title: str, product_name: str, original_title: str)
         or _extract_quantity(original_title)
         or _extract_quantity(product_name)
     )
+    quantity = _normalize_quantity_for_listing(quantity)
     cleaned_title = _strip_quantity_expressions(title)
-    if quantity:
-        return f"{quantity}PCS {cleaned_title}".strip()
-    return cleaned_title
+    return f"{quantity}PCS {cleaned_title}".strip()
 
 
 def _cm_to_inches(value: object) -> str:
@@ -133,6 +140,30 @@ def _build_dimension_facts(product_config: dict) -> dict[str, str]:
         "高": _cm_to_inches(dimensions.get("高")),
     }
     return {key: value for key, value in result.items() if value}
+
+
+def _build_size_scale_hint(product_config: dict) -> str:
+    dimension_facts = _build_dimension_facts(product_config)
+    if not dimension_facts:
+        return ""
+    parts = []
+    for key in ("长", "宽", "高"):
+        value = dimension_facts.get(key)
+        if value:
+            parts.append(f"{key}{value}")
+    return "，".join(parts)
+
+
+def _extract_current_material(product_config: dict) -> str:
+    attributes = product_config.get("必填属性", {})
+    if not isinstance(attributes, dict):
+        return ""
+
+    material = str(attributes.get("材质") or "").strip()
+    other_material = str(attributes.get("次要材质") or "").strip()
+    if material and other_material and other_material not in material:
+        return f"{material} / {other_material}"
+    return material or other_material
 
 
 def generate_product_content(
@@ -168,8 +199,10 @@ def generate_product_content(
             "squishies",
         ],
         "必填属性": product_config.get("必填属性", {}),
+        "当前材质": _extract_current_material(product_config),
         "包装信息": product_config.get("包装信息", {}),
         "尺寸信息（英寸）": _build_dimension_facts(product_config),
+        "尺寸感提示": _build_size_scale_hint(product_config),
         "参考图片情况": {
             "主体图片数量": sum(1 for path in (reference_image_paths or []) if path.parent.name == "主体"),
             "包装图片数量": sum(1 for path in (reference_image_paths or []) if path.parent.name == "包装"),
@@ -180,17 +213,19 @@ def generate_product_content(
 
 必须遵守：
 1. 只使用图片或资料中能确认的商品事实，不得虚构材质、功能、配件、认证、尺寸、数量或安全承诺。
-2. 商品标题必须以明确的商品数量开头，使用大写英文 PCS 格式，例如“6PCS ”、“8PCS ”，然后再写中文商品标题，最后补充相关英文搜索词。禁止使用“几个装、几件装、几只装、套装、X个、X件”等中文数量表达。数量只能来自图片或商品资料中能够确认的数量，不得猜测或虚构。
+2. 商品标题必须以明确的商品数量开头，使用大写英文 PCS 格式，例如“5PCS ”、“6PCS ”、“8PCS ”，然后再写中文商品标题，最后补充相关英文搜索词。禁止使用“1PCS”、以及“几个装、几件装、几只装、套装、X个、X件”等中文数量表达。数量必须控制在 5PCS 到 9PCS 之间；如果图片或资料里能确认的数量低于 5，统一提升到 5PCS；如果高于 9，统一收敛到 9PCS。
 3. 标题严禁出现任何年龄信息，包括“岁、周岁、月龄、个月、适合X岁、X years old、X+ years”等表达，也不要用年龄范围暗示适用人群。
 4. 标题应尽量覆盖商品类型、数量、主题或系列、主要用途和礼物/装饰等真实场景；中文部分自然易读，英文部分用于补充搜索词，不要机械重复同义词。
 5. 固定关键词可作为标题末尾的英文搜索词使用，但必须结合图片和商品标题自然选择，不要全部机械堆叠，也不要因为关键词虚构商品功能。
 6. image_prompt 必须是一份完整的九宫格图片生成提示词，明确列出第 1 到第 9 张图分别展示什么效果，不要只返回零散的商品补充词。
-7. 九宫格至少 6 个画面必须有人手自然把玩、握持、按压、整理或互动商品；其中至少 2 个画面使用自然的女性美甲手，至少 2 个画面使用儿童手或亲子互动的手。纯背景或无人手的商品陈列最多 1 个画面，不能让多数画面只是商品放在背景上。
-8. 九宫格完全不要安排包装展示图，即使存在包装图片或包装资料，也必须把该位置改为商品细节、多角度、真实使用、陈列或生活方式场景。只有在“尺寸信息（英寸）”完整时，才生成一张简洁的尺寸标注图，并且只能标注提供的长、宽、高；尺寸不完整时，改用其他可确认的商品展示效果，不能留下空白或编造信息。
-9. 图片提示词只描述商品本身、真实卖点、适合的使用场景、真实颜色材质、女性美甲手/儿童手的自然互动方式和九宫格中值得展示的画面方向。
-10. 不要重复全局图片规则，不要要求改变商品，不要添加包装、认证标志、警告文字、虚假配件或不存在的功能。
-11. 必须只返回 JSON，不要 Markdown，不要解释文字，格式必须是：
-{"title":"6PCS 中文商品标题, english keyword, search keyword","image_prompt":"1. ...\\n2. ...\\n3. ...\\n4. ...\\n5. ...\\n6. ...\\n7. ...\\n8. ...\\n9. ..."}
+7. 当前材质已在商品资料中提供，image_prompt 必须明确围绕“当前材质”来组织九宫格画面。每一张图都要在描述里体现该材质的真实外观、触感、表面效果或使用状态，不要只写泛化的商品展示。
+8. 如果商品资料里给出了“尺寸感提示”，image_prompt 必须把这个尺寸感直接写进画面描述中，明确让生成图保持与手掌、桌面和人物动作相符的真实比例，避免把商品画得过小像手指头，也避免夸大成不真实的大件。
+9. 九宫格至少 6 个画面必须有人手自然把玩、握持、按压、整理或互动商品；其中至少 2 个画面使用做了美甲的女性手，至少 2 个画面使用儿童手或亲子互动的手。纯背景或无人手的商品陈列最多 1 个画面，不能让多数画面只是商品放在背景上。
+10. 九宫格完全不要安排包装展示图，即使存在包装图片或包装资料，也必须把该位置改为商品细节、多角度、真实使用、陈列或生活方式场景。只有在“尺寸信息（英寸）”完整时，才生成一张简洁的尺寸标注图，并且只能标注提供的长、宽、高；尺寸不完整时，改用其他可确认的商品展示效果，不能留下空白或编造信息。
+11. 图片提示词只描述商品本身、真实卖点、适合的使用场景、真实颜色材质、做了美甲的女性手/儿童手的自然互动方式和九宫格中值得展示的画面方向。
+12. 不要重复全局图片规则，不要要求改变商品，不要添加包装、认证标志、警告文字、虚假配件或不存在的功能。
+13. 必须只返回 JSON，不要 Markdown，不要解释文字，格式必须是：
+{"title":"5PCS 中文商品标题, english keyword, search keyword","image_prompt":"1. ...\\n2. ...\\n3. ...\\n4. ...\\n5. ...\\n6. ...\\n7. ...\\n8. ...\\n9. ..."}
 """.strip()
     user_text = (
         "请先识别图片中的真实商品，再结合资料生成结果。"

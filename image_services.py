@@ -363,6 +363,15 @@ def generate_ai_crops_for_goods(
         download_image(image_url, source_path)
 
     product_name = get_goods_name(goods)
+    product_attributes = product_config.get("必填属性", {}) if isinstance(product_config, dict) else {}
+    current_material = ""
+    if isinstance(product_attributes, dict):
+        material = str(product_attributes.get("材质") or "").strip()
+        other_material = str(product_attributes.get("次要材质") or "").strip()
+        if material and other_material and other_material not in material:
+            current_material = f"{material} / {other_material}"
+        else:
+            current_material = material or other_material
     generated_content = {}
     if generate_title or generate_prompt:
         provider_label = AI_PROVIDER_CONFIGS.get(chat_provider, {}).get("label", chat_provider)
@@ -406,6 +415,31 @@ def generate_ai_crops_for_goods(
     final_prompt = build_core_prompt(product_name)
     if generate_prompt and generated_content.get("image_prompt"):
         final_prompt += "\n\nComplete nine-grid instructions from chat model:\n" + generated_content["image_prompt"]
+    if current_material:
+        final_prompt += (
+            "\n\nCurrent material to preserve and emphasize in every panel: "
+            f"{current_material}. Make the visible texture, surface finish, and hand interaction"
+            " match this material consistently across the nine-grid collage."
+        )
+    size_hint = ""
+    if isinstance(product_config, dict):
+        package_info = product_config.get("包装信息", {})
+        if isinstance(package_info, dict):
+            dimensions = package_info.get("含包装尺寸", {})
+            if isinstance(dimensions, dict):
+                dimension_parts = []
+                for key in ("长", "宽", "高"):
+                    value = str(dimensions.get(key) or "").strip()
+                    if value:
+                        dimension_parts.append(f"{key}{value}cm")
+                if dimension_parts:
+                    size_hint = "，".join(dimension_parts)
+    if size_hint:
+        final_prompt += (
+            "\n\nSize hint to preserve realistic scale: "
+            f"{size_hint}. Keep the product's apparent size consistent with hands, desk surfaces, "
+            "and everyday use so it does not look tiny or oversized."
+        )
     final_prompt += (
         "\n\nPackaging exclusion: do not dedicate any of the nine panels to packaging display, "
         "even if packaging references or packaging data exist. Replace it with a confirmed "
@@ -452,5 +486,3 @@ def generate_ai_crops_for_goods(
     else:
         log_handler("未识别到可裁剪区域，将使用 AI 原图作为商品图")
     return crop_paths or [output_path]
-
-
