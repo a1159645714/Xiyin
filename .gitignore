@@ -10,4 +10,8 @@ config_profiles/
 *.log
 *.tmp
 *.zip
+*.spec
+build/
+dist/
+release/
 .DS_Store

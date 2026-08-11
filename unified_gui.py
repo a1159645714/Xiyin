@@ -5,7 +5,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProgressDialog,
     QScrollArea,
     QTabWidget,
     QTableWidget,
@@ -72,6 +73,8 @@ from task_workers import (
     PublishWorker,
     ThumbnailWorker,
 )
+from update_service import UpdateManifest, can_install_updates, launch_updater
+from update_workers import UpdateCheckWorker, UpdateDownloadWorker
 
 
 CERTIFICATE_FIELD_ALIASES = {
@@ -116,6 +119,9 @@ class MainWindow(FluentWindow):
         self.ai_model_worker: AiModelListWorker | None = None
         self.ai_test_worker: AiImageTestWorker | None = None
         self.thumbnail_workers: list[ThumbnailWorker] = []
+        self.update_check_worker: UpdateCheckWorker | None = None
+        self.update_download_worker: UpdateDownloadWorker | None = None
+        self.update_progress_dialog: QProgressDialog | None = None
         self.current_goods_list: list[dict] = []
         self.selected_image_path = ""
         self.ai_test_image_path = ""
@@ -131,6 +137,7 @@ class MainWindow(FluentWindow):
         self.build_ui()
         self.apply_styles()
         self.restore_settings_to_ui()
+        QTimer.singleShot(1500, self.check_for_updates)
 
     def build_ui(self) -> None:
         search_tab = self.build_search_tab()
@@ -1614,6 +1621,85 @@ class MainWindow(FluentWindow):
         self.log_box.setTextColor(color)
         self.log_box.append(message)
         self.log_box.setTextColor(QColor("#c8ced8"))
+
+    def check_for_updates(self) -> None:
+        if not can_install_updates() or self.update_check_worker is not None:
+            return
+
+        self.update_check_worker = UpdateCheckWorker(APP_VERSION)
+        self.update_check_worker.update_found.connect(self.offer_update)
+        self.update_check_worker.no_update.connect(self.finish_update_check)
+        self.update_check_worker.failed.connect(self.fail_update_check)
+        self.update_check_worker.finished.connect(self.release_update_check_worker)
+        self.update_check_worker.start()
+
+    def offer_update(self, manifest: UpdateManifest) -> None:
+        notes = manifest.notes or "包含功能改进和问题修复"
+        answer = QMessageBox.question(
+            self,
+            "发现新版本",
+            f"发现新版本 v{manifest.version}，当前版本为 v{APP_VERSION}。\n\n"
+            f"更新内容：\n{notes}\n\n是否立即下载并安装？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            self.download_update(manifest)
+
+    def finish_update_check(self) -> None:
+        self.append_log(f"[更新] 当前已是最新版本 v{APP_VERSION}")
+
+    def fail_update_check(self, message: str) -> None:
+        self.append_log(f"[更新] 检查失败: {message}")
+
+    def release_update_check_worker(self) -> None:
+        self.update_check_worker = None
+
+    def download_update(self, manifest: UpdateManifest) -> None:
+        if self.update_download_worker is not None:
+            return
+
+        dialog = QProgressDialog("正在下载更新包...", "", 0, 100, self)
+        dialog.setWindowTitle(f"更新到 v{manifest.version}")
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setValue(0)
+        self.update_progress_dialog = dialog
+
+        self.update_download_worker = UpdateDownloadWorker(manifest)
+        self.update_download_worker.progress_changed.connect(dialog.setValue)
+        self.update_download_worker.completed.connect(self.install_downloaded_update)
+        self.update_download_worker.failed.connect(self.fail_update_download)
+        self.update_download_worker.finished.connect(self.release_update_download_worker)
+        self.update_download_worker.start()
+
+    def install_downloaded_update(self, manifest: UpdateManifest, archive_path: Path) -> None:
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.setValue(100)
+        try:
+            launch_updater(archive_path, manifest.sha256)
+        except Exception as error:
+            QMessageBox.critical(self, "更新失败", str(error))
+            return
+
+        QMessageBox.information(
+            self,
+            "准备安装更新",
+            "程序将关闭并安装更新，完成后会自动重新启动。",
+        )
+        QApplication.quit()
+
+    def fail_update_download(self, message: str) -> None:
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.close()
+        QMessageBox.critical(self, "更新下载失败", message)
+
+    def release_update_download_worker(self) -> None:
+        self.update_download_worker = None
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.close()
+            self.update_progress_dialog = None
 
 
 def main() -> None:

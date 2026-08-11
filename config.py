@@ -31,7 +31,7 @@ VIEWPORT_WIDTH = 1920
 VIEWPORT_HEIGHT = 1080
 
 APP_TITLE = "希音平台全自动上品工具"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 UPDATE_MANIFEST_URL = (
     "https://xiyin-updates-1302706245.cos.ap-chongqing.myqcloud.com/"
     "updates/update.json"
