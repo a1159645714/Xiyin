@@ -48,7 +48,8 @@ if errorlevel 1 goto :error
 
 py -3 build_release.py ^
   --dist "dist\XiYinAutoUploader" ^
-  --output "release"
+  --output "release" ^
+  --force-update
 if errorlevel 1 goto :error
 
 if "%SKIP_UPLOAD%"=="0" (

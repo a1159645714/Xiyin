@@ -83,6 +83,37 @@ def public_object_size(url: str) -> int:
     return int(response.headers.get("Content-Length", -1))
 
 
+def upload_archive(client, bucket: str, key: str, archive_path: Path) -> None:
+    headers = {
+        "ContentType": "application/zip",
+        "CacheControl": "public, max-age=31536000, immutable",
+    }
+    try:
+        client.upload_file(
+            Bucket=bucket,
+            LocalFilePath=str(archive_path),
+            Key=key,
+            PartSize=10,
+            MAXThread=5,
+            **headers,
+        )
+        return
+    except Exception as error:
+        get_error_code = getattr(error, "get_error_code", None)
+        error_code = get_error_code() if callable(get_error_code) else ""
+        if error_code != "AccessDenied":
+            raise
+
+    print("没有分片任务查询权限，改用单次对象上传")
+    with archive_path.open("rb") as archive_file:
+        client.put_object(
+            Bucket=bucket,
+            Body=archive_file,
+            Key=key,
+            **headers,
+        )
+
+
 def upload_release(release_dir: Path, *, force: bool = False) -> None:
     secret_id = os.environ.get(SECRET_ID_ENV, "").strip()
     secret_key = os.environ.get(SECRET_KEY_ENV, "").strip()
@@ -111,15 +142,7 @@ def upload_release(release_dir: Path, *, force: bool = False) -> None:
     )
 
     print(f"正在上传更新包: cos://{bucket}/{archive_key}")
-    client.upload_file(
-        Bucket=bucket,
-        LocalFilePath=str(archive_path),
-        Key=archive_key,
-        PartSize=10,
-        MAXThread=5,
-        ContentType="application/zip",
-        CacheControl="public, max-age=31536000, immutable",
-    )
+    upload_archive(client, bucket, archive_key, archive_path)
 
     remote_size = public_object_size(manifest.download_url)
     if remote_size != archive_path.stat().st_size:

@@ -23,6 +23,9 @@ def main() -> None:
     parser.add_argument("--dist", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--notes", default="Feature improvements and fixes")
+    parser.add_argument("--minimum-supported-version", default=APP_VERSION)
+    parser.add_argument("--force-update", action="store_true")
+    parser.add_argument("--message", default="")
     args = parser.parse_args()
 
     dist_dir = args.dist.resolve()
@@ -48,6 +51,10 @@ def main() -> None:
         "sha256": digest,
         "version": APP_VERSION,
         "notes": args.notes,
+        "minimum_supported_version": args.minimum_supported_version,
+        "disabled_versions": [],
+        "force_update": args.force_update,
+        "message": args.message,
     }
     manifest_path = output_dir / "update.json"
     manifest_path.write_text(

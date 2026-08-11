@@ -73,7 +73,14 @@ from task_workers import (
     PublishWorker,
     ThumbnailWorker,
 )
-from update_service import UpdateManifest, can_install_updates, launch_updater
+from update_service import (
+    UpdateManifest,
+    can_install_updates,
+    is_newer_version,
+    is_update_required,
+    is_version_disabled,
+    launch_updater,
+)
 from update_workers import UpdateCheckWorker, UpdateDownloadWorker
 
 
@@ -122,6 +129,7 @@ class MainWindow(FluentWindow):
         self.update_check_worker: UpdateCheckWorker | None = None
         self.update_download_worker: UpdateDownloadWorker | None = None
         self.update_progress_dialog: QProgressDialog | None = None
+        self.update_access_blocked = False
         self.current_goods_list: list[dict] = []
         self.selected_image_path = ""
         self.ai_test_image_path = ""
@@ -1626,12 +1634,39 @@ class MainWindow(FluentWindow):
         if not can_install_updates() or self.update_check_worker is not None:
             return
 
+        self.update_access_blocked = True
+        self.setEnabled(False)
         self.update_check_worker = UpdateCheckWorker(APP_VERSION)
-        self.update_check_worker.update_found.connect(self.offer_update)
-        self.update_check_worker.no_update.connect(self.finish_update_check)
+        self.update_check_worker.manifest_ready.connect(self.handle_update_manifest)
         self.update_check_worker.failed.connect(self.fail_update_check)
         self.update_check_worker.finished.connect(self.release_update_check_worker)
         self.update_check_worker.start()
+
+    def handle_update_manifest(self, manifest: UpdateManifest, from_cache: bool) -> None:
+        newer_version = is_newer_version(manifest.version, APP_VERSION)
+        update_required = is_update_required(manifest, APP_VERSION)
+        version_disabled = is_version_disabled(manifest, APP_VERSION)
+
+        if update_required:
+            self.offer_required_update(manifest, newer_version, from_cache)
+            return
+
+        if from_cache:
+            QMessageBox.critical(
+                self,
+                "无法验证版本状态",
+                "当前无法连接更新服务器，不能确认该版本是否仍被允许使用。\n"
+                "请检查网络连接后重新启动程序。",
+            )
+            QApplication.quit()
+            return
+
+        self.update_access_blocked = False
+        self.setEnabled(True)
+        if newer_version:
+            self.offer_update(manifest)
+        else:
+            self.finish_update_check()
 
     def offer_update(self, manifest: UpdateManifest) -> None:
         notes = manifest.notes or "包含功能改进和问题修复"
@@ -1646,11 +1681,53 @@ class MainWindow(FluentWindow):
         if answer == QMessageBox.Yes:
             self.download_update(manifest)
 
+    def offer_required_update(
+        self,
+        manifest: UpdateManifest,
+        newer_version: bool,
+        from_cache: bool,
+    ) -> None:
+        message = manifest.message or "当前版本已停止服务，请升级后继续使用。"
+        if from_cache:
+            message += "\n\n当前无法连接更新服务器，已使用最近一次有效的停用策略。"
+
+        if not newer_version:
+            QMessageBox.critical(self, "当前版本已停用", message)
+            QApplication.quit()
+            return
+
+        if not Path(sys.executable).resolve().with_name("XiYinUpdater.exe").is_file():
+            QMessageBox.critical(
+                self,
+                "必须升级",
+                f"{message}\n\n当前安装缺少更新程序，请下载安装最新完整版本。",
+            )
+            QApplication.quit()
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "必须升级",
+            f"{message}\n\n可升级到 v{manifest.version}，是否立即更新？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            self.download_update(manifest)
+        else:
+            QApplication.quit()
+
     def finish_update_check(self) -> None:
         self.append_log(f"[更新] 当前已是最新版本 v{APP_VERSION}")
 
     def fail_update_check(self, message: str) -> None:
         self.append_log(f"[更新] 检查失败: {message}")
+        QMessageBox.critical(
+            self,
+            "无法验证版本状态",
+            f"无法连接更新服务器，程序不能继续运行。\n\n{message}",
+        )
+        QApplication.quit()
 
     def release_update_check_worker(self) -> None:
         self.update_check_worker = None
@@ -1694,6 +1771,8 @@ class MainWindow(FluentWindow):
         if self.update_progress_dialog is not None:
             self.update_progress_dialog.close()
         QMessageBox.critical(self, "更新下载失败", message)
+        if self.update_access_blocked:
+            QApplication.quit()
 
     def release_update_download_worker(self) -> None:
         self.update_download_worker = None

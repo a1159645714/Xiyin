@@ -7,9 +7,17 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from update_service import UpdateError, is_newer_version, parse_update_manifest
+from update_service import (
+    UpdateError,
+    is_newer_version,
+    is_update_required,
+    is_version_disabled,
+    load_cached_manifest,
+    parse_update_manifest,
+    save_cached_manifest,
+)
 from updater_main import apply_update_archive, safe_extract_archive
-from upload_release import cos_location, upload_release
+from upload_release import cos_location, upload_archive, upload_release
 
 
 class UpdateServiceTests(unittest.TestCase):
@@ -28,6 +36,51 @@ class UpdateServiceTests(unittest.TestCase):
             }
         )
         self.assertEqual(manifest.version, "1.0.6")
+
+    def test_manifest_supports_forced_disable_policy(self) -> None:
+        manifest = parse_update_manifest(
+            {
+                "version": "1.0.8",
+                "download_url": "https://example.com/updates/app.zip",
+                "sha256": "a" * 64,
+                "minimum_supported_version": "1.0.8",
+                "disabled_versions": ["v1.0.7"],
+                "force_update": True,
+                "message": "必须升级",
+            }
+        )
+        self.assertTrue(is_version_disabled(manifest, "1.0.7"))
+        self.assertTrue(is_update_required(manifest, "1.0.7"))
+        self.assertFalse(is_version_disabled(manifest, "1.0.8"))
+
+    def test_force_update_requires_a_newer_version(self) -> None:
+        manifest = parse_update_manifest(
+            {
+                "version": "1.0.8",
+                "download_url": "https://example.com/updates/app.zip",
+                "sha256": "a" * 64,
+                "force_update": True,
+            }
+        )
+        self.assertTrue(is_update_required(manifest, "1.0.7"))
+        self.assertFalse(is_update_required(manifest, "1.0.8"))
+
+    def test_manifest_cache_preserves_disable_policy(self) -> None:
+        manifest = parse_update_manifest(
+            {
+                "version": "1.0.8",
+                "download_url": "https://example.com/updates/app.zip",
+                "sha256": "a" * 64,
+                "disabled_versions": ["1.0.7"],
+                "message": "版本已停用",
+            }
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "manifest.json"
+            with patch("update_service.UPDATE_MANIFEST_CACHE_FILE", cache_path):
+                save_cached_manifest(manifest)
+                cached_manifest = load_cached_manifest()
+        self.assertEqual(cached_manifest, manifest)
 
     def test_manifest_rejects_insecure_download(self) -> None:
         with self.assertRaises(UpdateError):
@@ -148,6 +201,21 @@ class UpdateServiceTests(unittest.TestCase):
                 method_names.index("upload_file"),
                 method_names.index("put_object"),
             )
+
+    def test_archive_upload_falls_back_when_multipart_listing_is_denied(self) -> None:
+        class AccessDeniedError(Exception):
+            def get_error_code(self) -> str:
+                return "AccessDenied"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive_path = Path(temp_dir) / "release.zip"
+            archive_path.write_bytes(b"release")
+            client = MagicMock()
+            client.upload_file.side_effect = AccessDeniedError()
+
+            upload_archive(client, "bucket", "updates/release.zip", archive_path)
+
+            client.put_object.assert_called_once()
 
 
 if __name__ == "__main__":

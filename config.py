@@ -31,11 +31,12 @@ VIEWPORT_WIDTH = 1920
 VIEWPORT_HEIGHT = 1080
 
 APP_TITLE = "希音平台全自动上品工具"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 UPDATE_MANIFEST_URL = (
     "https://xiyin-updates-1302706245.cos.ap-chongqing.myqcloud.com/"
     "updates/update.json"
 )
+UPDATE_MANIFEST_CACHE_FILE = BASE_DIR / ".update_manifest_cache.json"
 SCARCE_HOT_TAB_TEXT = "稀缺爆款"
 PLATFORM_HOT_TAB_TEXT = "平台热卖"
 POTENTIAL_TREND_TAB_TEXT = "潜力趋势"

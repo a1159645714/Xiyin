@@ -1,11 +1,16 @@
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from update_service import UpdateManifest, download_update, fetch_update_manifest
+from update_service import (
+    UpdateManifest,
+    download_update,
+    fetch_update_manifest,
+    load_cached_manifest,
+    save_cached_manifest,
+)
 
 
 class UpdateCheckWorker(QThread):
-    update_found = pyqtSignal(object)
-    no_update = pyqtSignal()
+    manifest_ready = pyqtSignal(object, bool)
     failed = pyqtSignal(str)
 
     def __init__(self, current_version: str):
@@ -13,16 +18,16 @@ class UpdateCheckWorker(QThread):
         self.current_version = current_version
 
     def run(self) -> None:
-        from update_service import is_newer_version
-
         try:
             manifest = fetch_update_manifest()
-            if is_newer_version(manifest.version, self.current_version):
-                self.update_found.emit(manifest)
-            else:
-                self.no_update.emit()
+            save_cached_manifest(manifest)
+            self.manifest_ready.emit(manifest, False)
         except Exception as error:
-            self.failed.emit(str(error))
+            cached_manifest = load_cached_manifest()
+            if cached_manifest is not None:
+                self.manifest_ready.emit(cached_manifest, True)
+            else:
+                self.failed.emit(str(error))
 
 
 class UpdateDownloadWorker(QThread):

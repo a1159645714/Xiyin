@@ -13,7 +13,7 @@ from typing import Callable
 
 import requests
 
-from config import BASE_DIR, UPDATE_MANIFEST_URL
+from config import BASE_DIR, UPDATE_MANIFEST_CACHE_FILE, UPDATE_MANIFEST_URL
 
 
 class UpdateError(RuntimeError):
@@ -26,6 +26,10 @@ class UpdateManifest:
     download_url: str
     sha256: str
     notes: str = ""
+    minimum_supported_version: str = ""
+    disabled_versions: tuple[str, ...] = ()
+    force_update: bool = False
+    message: str = ""
 
 
 def parse_version(value: str) -> tuple[int, ...]:
@@ -51,6 +55,24 @@ def is_newer_version(candidate: str, current: str) -> bool:
     )
 
 
+def versions_equal(left: str, right: str) -> bool:
+    return not is_newer_version(left, right) and not is_newer_version(right, left)
+
+
+def is_version_disabled(manifest: UpdateManifest, current_version: str) -> bool:
+    if any(versions_equal(version, current_version) for version in manifest.disabled_versions):
+        return True
+    if manifest.minimum_supported_version:
+        return is_newer_version(manifest.minimum_supported_version, current_version)
+    return False
+
+
+def is_update_required(manifest: UpdateManifest, current_version: str) -> bool:
+    return is_version_disabled(manifest, current_version) or (
+        manifest.force_update and is_newer_version(manifest.version, current_version)
+    )
+
+
 def parse_update_manifest(payload: object) -> UpdateManifest:
     if not isinstance(payload, dict):
         raise UpdateError("更新清单格式错误")
@@ -59,19 +81,68 @@ def parse_update_manifest(payload: object) -> UpdateManifest:
     download_url = str(payload.get("download_url", "")).strip()
     sha256 = str(payload.get("sha256", "")).strip().lower()
     notes = str(payload.get("notes", "")).strip()
+    minimum_supported_version = str(payload.get("minimum_supported_version", "")).strip()
+    raw_disabled_versions = payload.get("disabled_versions", [])
+    force_update = payload.get("force_update", False)
+    message = str(payload.get("message", "")).strip()
 
     parse_version(version)
     if not download_url.startswith("https://"):
         raise UpdateError("更新包必须使用 HTTPS 地址")
     if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
         raise UpdateError("更新清单中的 SHA-256 无效")
+    if minimum_supported_version:
+        parse_version(minimum_supported_version)
+    if not isinstance(raw_disabled_versions, list):
+        raise UpdateError("disabled_versions 必须是版本号列表")
+    disabled_versions = tuple(str(value).strip() for value in raw_disabled_versions)
+    for disabled_version in disabled_versions:
+        parse_version(disabled_version)
+    if not isinstance(force_update, bool):
+        raise UpdateError("force_update 必须是布尔值")
 
     return UpdateManifest(
         version=version,
         download_url=download_url,
         sha256=sha256,
         notes=notes,
+        minimum_supported_version=minimum_supported_version,
+        disabled_versions=disabled_versions,
+        force_update=force_update,
+        message=message,
     )
+
+
+def manifest_to_dict(manifest: UpdateManifest) -> dict[str, object]:
+    return {
+        "download_url": manifest.download_url,
+        "sha256": manifest.sha256,
+        "version": manifest.version,
+        "notes": manifest.notes,
+        "minimum_supported_version": manifest.minimum_supported_version,
+        "disabled_versions": list(manifest.disabled_versions),
+        "force_update": manifest.force_update,
+        "message": manifest.message,
+    }
+
+
+def save_cached_manifest(manifest: UpdateManifest) -> None:
+    temporary_path = UPDATE_MANIFEST_CACHE_FILE.with_suffix(".tmp")
+    temporary_path.write_text(
+        json.dumps(manifest_to_dict(manifest), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(UPDATE_MANIFEST_CACHE_FILE)
+
+
+def load_cached_manifest() -> UpdateManifest | None:
+    if not UPDATE_MANIFEST_CACHE_FILE.is_file():
+        return None
+    try:
+        payload = json.loads(UPDATE_MANIFEST_CACHE_FILE.read_text(encoding="utf-8"))
+        return parse_update_manifest(payload)
+    except (OSError, ValueError, UpdateError):
+        return None
 
 
 def fetch_update_manifest(
@@ -141,7 +212,7 @@ def updater_path() -> Path:
 
 
 def can_install_updates() -> bool:
-    return bool(getattr(sys, "frozen", False) and updater_path().is_file())
+    return bool(getattr(sys, "frozen", False))
 
 
 def launch_updater(archive_path: Path, expected_sha256: str) -> None:

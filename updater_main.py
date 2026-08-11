@@ -23,6 +23,7 @@ PRESERVED_NAMES = {
     "config_profiles",
     "output",
     "update.log",
+    ".update_manifest_cache.json",
 }
 
 
