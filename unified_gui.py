@@ -423,6 +423,8 @@ class MainWindow(FluentWindow):
 
         self.real_photo_product_combo = NoWheelComboBox()
         self.real_photo_product_combo.currentTextChanged.connect(self.on_real_photo_product_changed)
+        self.real_photo_upload_enabled_checkbox = QCheckBox("启用当前商品上传")
+        self.real_photo_upload_enabled_checkbox.setChecked(True)
         self.title_source_combo = NoWheelComboBox()
         self.title_source_combo.addItem("使用自定义标题", "custom")
         self.title_source_combo.addItem("使用勾选商品名称", "goods_name")
@@ -455,7 +457,8 @@ class MainWindow(FluentWindow):
 
         row = 0
         layout.addWidget(QLabel("当前商品"), row, 0)
-        layout.addWidget(self.real_photo_product_combo, row, 1, 1, 3)
+        layout.addWidget(self.real_photo_product_combo, row, 1, 1, 2)
+        layout.addWidget(self.real_photo_upload_enabled_checkbox, row, 3)
         row += 1
         layout.addWidget(QLabel("商品配置"), row, 0)
         save_button = QPushButton("保存到 app_settings.json")
@@ -1026,6 +1029,13 @@ class MainWindow(FluentWindow):
             if not isinstance(saved_configs, dict):
                 saved_configs = {}
             self.real_photo_product_configs = dict(saved_configs)
+            saved_enabled = self.settings.get("real_photo_upload_enabled", {})
+            if not isinstance(saved_enabled, dict):
+                saved_enabled = {}
+            self.real_photo_upload_enabled = {
+                product_name: bool(saved_enabled.get(product_name, True))
+                for product_name in grouped
+            }
             self._real_photo_config_ready = False
             self._active_real_photo_product = ""
             if not getattr(self, "real_photo_default_config", None):
@@ -1101,6 +1111,9 @@ class MainWindow(FluentWindow):
             if not hasattr(self, "real_photo_product_configs"):
                 self.real_photo_product_configs = {}
             self.real_photo_product_configs[name] = self.build_product_config_from_ui()
+            if not hasattr(self, "real_photo_upload_enabled"):
+                self.real_photo_upload_enabled = {}
+            self.real_photo_upload_enabled[name] = self.real_photo_upload_enabled_checkbox.isChecked()
 
     def load_real_photo_product_config(self, product_name: str) -> None:
         if not product_name:
@@ -1115,6 +1128,8 @@ class MainWindow(FluentWindow):
             self.apply_product_config_to_ui(config)
         elif isinstance(getattr(self, "real_photo_default_config", None), dict):
             self.apply_product_config_to_ui(self.real_photo_default_config)
+        enabled = getattr(self, "real_photo_upload_enabled", {}).get(product_name, True)
+        self.real_photo_upload_enabled_checkbox.setChecked(bool(enabled))
         self._active_real_photo_product = product_name
 
     def on_real_photo_product_changed(self, product_name: str) -> None:
@@ -1220,6 +1235,7 @@ class MainWindow(FluentWindow):
             "cookies_file": self.cookie_edit.text().strip(),
             "common_mark_image_file": self.common_mark_image_edit.text().strip(),
             "real_photo_configs": dict(getattr(self, "real_photo_product_configs", {})),
+            "real_photo_upload_enabled": dict(getattr(self, "real_photo_upload_enabled", {})),
             "ai_provider": self.ai_provider_combo.currentData(),
             "ai_image_provider": self.ai_provider_combo.currentData(),
             "ai_chat_provider": self.ai_chat_provider_combo.currentData(),
@@ -1361,6 +1377,11 @@ class MainWindow(FluentWindow):
             raise ValueError("实拍图目录中没有可用商品")
         self.save_real_photo_product_config()
         product_config = self.build_product_config_from_ui()
+        enabled_products = {
+            product_name
+            for product_name, enabled in getattr(self, "real_photo_upload_enabled", {}).items()
+            if enabled
+        }
         return {
             "product_root_dir": product_root_dir,
             "cookies_file": self.cookie_edit.text().strip(),
@@ -1385,6 +1406,7 @@ class MainWindow(FluentWindow):
             "title_source": "ai" if generate_title else self.title_source_combo.currentData(),
             "product_config": product_config,
             "real_photo_configs": dict(getattr(self, "real_photo_product_configs", {})),
+            "enabled_real_photo_products": sorted(enabled_products),
         }
 
     def build_product_config_from_ui(self) -> dict:
@@ -1506,8 +1528,18 @@ class MainWindow(FluentWindow):
         if local_root:
             try:
                 local_variants = scan_real_photo_library(local_root)
+                self.save_real_photo_product_config()
+                enabled_products = getattr(self, "real_photo_upload_enabled", {})
+                local_variants = [
+                    variant
+                    for variant in local_variants
+                    if enabled_products.get(variant.product_name, True)
+                ]
             except Exception as error:
                 QMessageBox.critical(self, "实拍图目录错误", str(error))
+                return
+            if not local_variants:
+                QMessageBox.warning(self, "提示", "没有启用上传的商品，请至少勾选一个商品")
                 return
             goods_list = [
                 {

@@ -153,7 +153,14 @@ class AsyncProductFileSets:
     def __iter__(self):
         yield self.first_product
         for index in range(1, self.total_count):
-            yield self.resolve_future(index)
+            try:
+                yield self.resolve_future(index)
+            except AutomationCancelled:
+                raise
+            except Exception as error:
+                self.log_handler(
+                    f"第 {index + 1}/{self.total_count} 个商品生成失败，已跳过并继续后续商品: {error}"
+                )
 
     def resolve_future(self, index: int) -> ProductFiles:
         if self.stop_event.is_set():
@@ -194,6 +201,7 @@ class PublishWorker(QThread):
 
     def run(self):
         completed = False
+        keep_browser_open = False
         try:
             self.playwright = sync_playwright().start()
             total_rounds = int(self.settings.get("upload_rounds", 1))
@@ -234,6 +242,7 @@ class PublishWorker(QThread):
             self.status.emit("已停止")
             self.failed.emit("已按用户请求停止流程")
         except Exception as error:
+            keep_browser_open = True
             self.status.emit("执行失败")
             self.failed.emit(str(error))
         finally:
@@ -241,15 +250,18 @@ class PublishWorker(QThread):
                 try:
                     if completed:
                         self.automation.cleanup_temp_files()
+                    elif keep_browser_open:
+                        self.log.emit("[自动化] 发生异常，已保留浏览器窗口和当前页面用于排查")
                     else:
                         self.automation.close()
                 except Exception as cleanup_error:
                     self.log.emit(f"清理浏览器或临时文件失败: {cleanup_error}")
             if self.playwright is not None:
-                try:
-                    self.playwright.stop()
-                except Exception as cleanup_error:
-                    self.log.emit(f"清理 Playwright 失败: {cleanup_error}")
+                if not keep_browser_open:
+                    try:
+                        self.playwright.stop()
+                    except Exception as cleanup_error:
+                        self.log.emit(f"清理 Playwright 失败: {cleanup_error}")
             if self.generation_executor is not None:
                 self.generation_executor.shutdown(wait=False, cancel_futures=True)
                 self.generation_executor = None
@@ -257,31 +269,64 @@ class PublishWorker(QThread):
     def prepare_product_file_pipeline(self) -> AsyncProductFileSets:
         root_dir = Path(self.settings["product_root_dir"])
         variants = scan_real_photo_library(root_dir)
+        enabled_products = self.settings.get("enabled_real_photo_products")
+        if isinstance(enabled_products, list):
+            enabled_product_set = {
+                str(product_name).strip()
+                for product_name in enabled_products
+                if str(product_name).strip()
+            }
+            variants = [
+                variant
+                for variant in variants
+                if variant.product_name in enabled_product_set
+            ]
         if len(variants) != len(self.goods_list):
             raise RuntimeError(
                 f"实拍图商品数量 {len(variants)} 与待处理商品数量 {len(self.goods_list)} 不一致"
             )
 
-        first_product = self.prepare_one_product_files(1, self.goods_list[0], root_dir, variants[0])
-        remaining_goods = self.goods_list[1:]
-        remaining_variants = variants[1:]
+        first_product = None
+        first_success_index = None
+        for index, (goods, variant) in enumerate(zip(self.goods_list, variants), start=1):
+            try:
+                first_product = self.prepare_one_product_files(index, goods, root_dir, variant)
+                first_success_index = index
+                break
+            except AutomationCancelled:
+                raise
+            except Exception as error:
+                goods_id = get_goods_id(goods) or f"selected_{index:02d}"
+                self.log.emit(
+                    f"第 {index}/{len(self.goods_list)} 个商品生成失败，已跳过并尝试后续商品 "
+                    f"({goods_id}): {error}"
+                )
+
+        if first_product is None or first_success_index is None:
+            raise RuntimeError("所有商品都未能生成可发布文件，流程无法继续")
+
+        remaining_goods = self.goods_list[first_success_index:]
+        remaining_variants = variants[first_success_index:]
         self.generation_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="xiyin_ai_generator")
         futures = [
             self.generation_executor.submit(
                 self.prepare_one_product_files,
-                index,
+                first_success_index + offset,
                 goods,
                 root_dir,
                 variant,
             )
-            for index, (goods, variant) in enumerate(zip(remaining_goods, remaining_variants), start=2)
+            for offset, (goods, variant) in enumerate(
+                zip(remaining_goods, remaining_variants),
+                start=1,
+            )
         ]
         if futures:
             self.log.emit(f"首轮图片已就绪，剩余 {len(futures)} 个商品将在上架过程中后台生成")
         return AsyncProductFileSets(
             first_product,
             futures,
-            len(self.goods_list),
+            1 + len(futures),
             self.stop_event,
             self.log.emit,
         )

@@ -75,6 +75,10 @@ class AutomationCancelled(RuntimeError):
     """Raised when the user requests a cooperative stop."""
 
 
+class PublishBlockedRetry(RuntimeError):
+    """Raised when the current publish entry is blocked and should be retried."""
+
+
 class BrowserAutomation:
     def __init__(
         self,
@@ -980,118 +984,69 @@ class BrowserAutomation:
         select = form_item.locator(".soui-select").first
         select.wait_for(state="visible", timeout=30000)
 
-        selected_text = select.locator(".soui-select-result").first.inner_text(timeout=10000)
-        if value_text in selected_text:
-            self.log(f"\u5df2\u786e\u8ba4: {label_text} = {value_text}")
-            return select
-
-        self.open_soui_select(page, select)
-        self.click_option_inside_select(page, select, value_text)
+        self.open_soui_select(page, dialog, select, value_text)
+        self.click_option_inside_select(page, dialog, value_text)
         self.wait_select_value(page, select, value_text)
         page.wait_for_timeout(300)
         self.log(f"\u5df2\u9009\u62e9: {label_text} = {value_text}")
         return select
 
-    def open_soui_select(self, page: Page, select) -> None:
-        self.reveal(select, timeout=10000)
-        select.click(force=True)
-        page.wait_for_timeout(500)
-        if self.is_select_picker_open(select):
-            return
+    def wait_for_stable_locator(self, page: Page, locator, description: str, timeout: int = 10000) -> None:
+        deadline = datetime.now().timestamp() + timeout / 1000
+        previous_box = None
+        stable_checks = 0
 
-        arrow = select.locator(".soui-select-arrow-icon").last
-        try:
-            self.reveal(arrow, timeout=5000)
-            arrow.click(force=True)
-            page.wait_for_timeout(500)
-            if self.is_select_picker_open(select):
-                return
-        except Exception:
-            pass
-
-        result_wrapper = select.locator(".soui-select-result-wrapper").first
-        try:
-            self.reveal(result_wrapper, timeout=5000)
-            result_wrapper.click(force=True)
-            page.wait_for_timeout(500)
-            if self.is_select_picker_open(select):
-                return
-        except Exception:
-            pass
-
-        select.focus()
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(500)
-        if self.is_select_picker_open(select):
-            return
-
-        page.keyboard.press("ArrowDown")
-        page.wait_for_timeout(500)
-        if self.is_select_picker_open(select):
-            return
-
-        raise RuntimeError("\u4e0b\u62c9\u6846\u672a\u80fd\u6253\u5f00")
-
-    def is_select_picker_open(self, select) -> bool:
-        picker = select.locator(".soui-select-picker-wrapper").last
-        try:
-            return picker.evaluate(
-                """(node) => {
-                    const style = window.getComputedStyle(node);
-                    return style.display !== 'none'
-                        && style.visibility !== 'hidden'
-                        && style.opacity !== '0'
-                        && node.getBoundingClientRect().height > 0;
-                }"""
-            )
-        except Exception:
-            return False
-
-    def close_soui_select_by_submit_hover(self, page: Page, select) -> None:
-        if not self.is_select_picker_open(select):
-            return
-
-        modal = page.locator(".soui-modal-panel").last
-        submit_button = modal.locator("button", has_text=SUBMIT_TEXT).last
-        submit_button.wait_for(state="visible", timeout=5000)
-        self.reveal(submit_button, timeout=5000)
-        submit_button.click(force=True)
-        page.wait_for_timeout(300)
-
-    def click_option_inside_select(self, page: Page, select, value_text: str) -> None:
-        picker = select.locator(".soui-select-picker-wrapper").last
-        option = picker.locator(".soui-select-option").filter(has_text=value_text).first
-        try:
-            option.wait_for(state="visible", timeout=5000)
-            option.evaluate("(node) => node.scrollIntoView({ block: 'center' })")
-            page.wait_for_timeout(800)
-            self.reveal(option, timeout=5000)
-            option.locator(".soui-select-option-inner").first.click(force=True)
-            return
-        except Exception:
-            pass
-
-        scroll = picker.locator('[data-soui-role="scroll"]').last
-        for _ in range(20):
-            option = picker.locator(".soui-select-option").filter(has_text=value_text).first
+        while datetime.now().timestamp() < deadline:
             try:
-                option.wait_for(state="visible", timeout=1000)
-                option.evaluate("(node) => node.scrollIntoView({ block: 'center' })")
-                page.wait_for_timeout(800)
-                self.reveal(option, timeout=5000)
-                option.locator(".soui-select-option-inner").first.click(force=True)
-                return
+                if not locator.is_visible(timeout=500) or not locator.is_enabled():
+                    page.wait_for_timeout(200)
+                    continue
+                box = locator.bounding_box()
+                if box is None:
+                    page.wait_for_timeout(200)
+                    continue
+                if box == previous_box:
+                    stable_checks += 1
+                    if stable_checks >= 2:
+                        return
+                else:
+                    previous_box = box
+                    stable_checks = 0
             except Exception:
-                try:
-                    scroll.evaluate("(node) => { node.scrollTop += 120; }")
-                except Exception:
-                    try:
-                        picker.evaluate("(node) => { node.scrollTop += 120; }")
-                    except Exception:
-                        pass
-                page.wait_for_timeout(500)
+                stable_checks = 0
+            page.wait_for_timeout(200)
 
-        raise RuntimeError(f"\u672a\u627e\u5230\u4e0b\u62c9\u9009\u9879: {value_text}")
+        raise RuntimeError(f"{description} 在 {timeout}ms 内未准备完成")
+
+    def open_soui_select(self, page: Page, dialog, select, value_text: str) -> None:
+        result_wrapper = select.locator(".soui-select-result-wrapper").first
+        self.reveal(result_wrapper, timeout=10000)
+        self.wait_for_stable_locator(page, result_wrapper, "下拉框")
+
+        option = dialog.locator(".soui-select-option:visible").filter(
+            has_text=re.compile(rf"^\s*{re.escape(value_text)}\s*$")
+        ).first
+
+        for attempt in range(1, 4):
+            self.visible_click(result_wrapper, timeout=10000)
+            try:
+                option.wait_for(state="visible", timeout=1500)
+                self.log(f"下拉框已打开: {value_text}（第 {attempt} 次点击）")
+                return
+            except PlaywrightTimeoutError:
+                if attempt < 3:
+                    self.log(f"下拉框未打开，准备重试: {value_text}（第 {attempt} 次）")
+                    page.wait_for_timeout(400)
+
+        raise RuntimeError(f"下拉框未成功打开，当前弹窗内未出现选项: {value_text}")
+
+    def click_option_inside_select(self, page: Page, dialog, value_text: str) -> None:
+        option = dialog.locator(".soui-select-option:visible").filter(
+            has_text=re.compile(rf"^\s*{re.escape(value_text)}\s*$")
+        ).first
+        option.wait_for(state="visible", timeout=10000)
+        self.reveal(option, timeout=5000)
+        option.locator(".soui-select-option-inner").first.click(force=True)
 
     def click_visible_soui_option(self, page: Page, value_text: str) -> None:
         for _ in range(10):
@@ -1120,6 +1075,7 @@ class BrowserAutomation:
 
     def submit_active_dialog(self, page: Page, dialog, log_name: str) -> None:
         submit_button = dialog.locator("button", has_text=SUBMIT_TEXT).last
+        self.wait_for_button_enabled(page, submit_button, f"{log_name} 提交")
         self.visible_click(submit_button)
         self.log(f"\u5df2\u63d0\u4ea4: {log_name}")
         page.wait_for_timeout(1000)
@@ -1143,12 +1099,43 @@ class BrowserAutomation:
             page.keyboard.press("Escape")
             modal.wait_for(state="hidden", timeout=10000)
 
+    def wait_for_button_enabled(self, page: Page, button, description: str, timeout: int = 30000) -> None:
+        deadline = datetime.now().timestamp() + timeout / 1000
+        last_state = "unknown"
+
+        while datetime.now().timestamp() < deadline:
+            try:
+                if button.count() == 0:
+                    last_state = "not found"
+                elif button.is_visible(timeout=500) and button.is_enabled():
+                    return
+                else:
+                    last_state = "disabled"
+            except Exception as error:
+                last_state = str(error)
+            page.wait_for_timeout(300)
+
+        raise RuntimeError(f"{description} 按钮在 {timeout}ms 内未启用，当前状态: {last_state}")
+
+    def blur_dialog_select(self, page: Page, dialog) -> None:
+        header = dialog.locator(".soui-modal-header").first
+        self.visible_click(header, timeout=5000)
+
+        deadline = datetime.now().timestamp() + 5
+        while datetime.now().timestamp() < deadline:
+            open_options = dialog.locator(".soui-select-option:visible")
+            if open_options.count() == 0:
+                return
+            page.wait_for_timeout(200)
+
+        raise RuntimeError("下拉框未失焦，无法继续选择下一项")
+
     def edit_eu_toy_safety_directive(self, page: Page) -> None:
         self.click_qualification_edit(page, EU_TOY_SAFETY_DIRECTIVE_TEXT)
         dialog = self.get_active_compliance_dialog(page)
         self.select_dialog_option_by_label(page, dialog, "\u9002\u7528\u89c4\u683c", MULTI_COLOR_TEXT)
-        toy_type_select = self.select_dialog_option_by_label_return_select(page, dialog, TOY_TYPE_TEXT, OTHER_TEXT)
-        self.close_soui_select_by_submit_hover(page, toy_type_select)
+        self.select_dialog_option_by_label_return_select(page, dialog, TOY_TYPE_TEXT, OTHER_TEXT)
+        self.blur_dialog_select(page, dialog)
         self.select_dialog_option_by_label(page, dialog, "\u4e0d\u9002\u7528\u5e74\u9f84", NOT_UNDER_3_TEXT)
         self.submit_active_dialog(page, dialog, EU_TOY_SAFETY_DIRECTIVE_TEXT)
 
@@ -1339,6 +1326,48 @@ class BrowserAutomation:
         self.wait_select_value(page, spec_select, spec_value)
         self.log(f"\u5df2\u9009\u62e9\u89c4\u683c: {spec_value}")
 
+    @staticmethod
+    def is_image_upload_accept(accept: str) -> bool:
+        normalized = str(accept or "").replace(" ", "").lower()
+        if not normalized:
+            return False
+        values = [value for value in normalized.split(",") if value]
+        return any(
+            value in {"image/*", ".png", ".jpg", ".jpeg"}
+            or value.startswith("image/")
+            for value in values
+        )
+
+    def wait_for_real_shot_upload_inputs(self, page: Page, dialog):
+        deadline = datetime.now().timestamp() + 30
+        last_inputs_description = ""
+
+        while datetime.now().timestamp() < deadline:
+            upload_inputs = dialog.locator('input[type="file"]')
+            image_input_indexes = []
+            descriptions = []
+
+            for index in range(upload_inputs.count()):
+                upload_input = upload_inputs.nth(index)
+                accept = upload_input.get_attribute("accept") or ""
+                descriptions.append(f"#{index + 1} accept={accept or '<empty>'}")
+                if self.is_image_upload_accept(accept):
+                    image_input_indexes.append(index)
+
+            last_inputs_description = "; ".join(descriptions) or "未找到 input[type=file]"
+            if len(image_input_indexes) == 2:
+                return (
+                    upload_inputs.nth(image_input_indexes[0]),
+                    upload_inputs.nth(image_input_indexes[1]),
+                )
+
+            page.wait_for_timeout(500)
+
+        raise RuntimeError(
+            "实拍图弹窗中未找到明确的两个图片上传框，"
+            f"当前文件上传框: {last_inputs_description}"
+        )
+
     def upload_real_shot_photos(self, page: Page) -> None:
         body_photo_dir = self.product_files.body_photo_dir or os.path.join(
             self.product_files.root_dir, BODY_REAL_PHOTO_DIR_NAME
@@ -1380,18 +1409,17 @@ class BrowserAutomation:
         page.wait_for_timeout(wait_ms)
         self.log(f"\u5df2\u7b49\u5f85\u5b9e\u62cd\u56fe\u5f39\u7a97\u7a33\u5b9a: {wait_ms / 1000:.1f}\u79d2")
 
-        upload_inputs = dialog.locator('input[type="file"][accept*=".png"]')
-        upload_inputs.first.wait_for(state="attached", timeout=30000)
+        body_upload_input, package_upload_input = self.wait_for_real_shot_upload_inputs(page, dialog)
         self.reveal(dialog, timeout=5000)
-        upload_inputs.first.set_input_files(body_photos)
+        body_upload_input.set_input_files(body_photos)
         self.log(f"\u5df2\u4e0a\u4f20\u672c\u4f53\u5b9e\u62cd\u56fe: {len(body_photos)} \u5f20")
 
-        upload_inputs.nth(1).wait_for(state="attached", timeout=30000)
         self.reveal(dialog, timeout=5000)
-        upload_inputs.nth(1).set_input_files(package_photos)
+        package_upload_input.set_input_files(package_photos)
         self.log(f"\u5df2\u4e0a\u4f20\u5305\u88c5\u5b9e\u62cd\u56fe: {len(package_photos)} \u5f20")
 
         submit_button = dialog.locator("button", has_text=SUBMIT_TEXT).last
+        self.wait_for_button_enabled(page, submit_button, "实拍图上传提交")
         self.visible_click(submit_button)
         self.log("\u5df2\u63d0\u4ea4\u5b9e\u62cd\u56fe")
         page.wait_for_timeout(1000)
@@ -1576,10 +1604,28 @@ class BrowserAutomation:
         success_pattern = re.compile(
             r"\u53d1\u5e03\u6210\u529f|\u62a5\u540d\u6210\u529f|\u63d0\u4ea4\u6210\u529f|\u53d1\u5e03\u5e76\u62a5\u540d\u6210\u529f"
         )
+        blocked_pattern = re.compile(r"\u53d1\u5e03\u62e6\u622a|14525|\u5c5e\u6027\u3010\u654f\u611f\u7c7b\u522b\u3011")
         deadline = datetime.now().timestamp() + 30
 
         while datetime.now().timestamp() < deadline:
             self.ensure_not_cancelled()
+            blocked_dialog = page.locator(".so-modal-panel, .soui-modal-panel").filter(
+                has_text=blocked_pattern
+            ).last
+            try:
+                if blocked_dialog.count() > 0 and blocked_dialog.is_visible(timeout=300):
+                    detail = blocked_dialog.inner_text(timeout=2000).strip()
+                    self.log(f"\u53d1\u5e03\u88ab\u62e6\u622a\uff0c\u5c06\u91cd\u65b0\u9009\u62e9\u53d1\u5e03\u5165\u53e3: {detail}")
+                    know_button = blocked_dialog.locator("button", has_text=I_KNOW_TEXT).last
+                    if know_button.count() > 0:
+                        know_button.click(force=True)
+                        page.wait_for_timeout(500)
+                    raise PublishBlockedRetry(detail)
+            except PublishBlockedRetry:
+                raise
+            except Exception:
+                pass
+
             success_notice = page.locator(
                 '.soui-message, .soui-notification, [role="alert"]'
             ).filter(has_text=success_pattern)
@@ -1615,6 +1661,17 @@ class BrowserAutomation:
             "\u4f46 30 \u79d2\u5185\u672a\u786e\u8ba4\u63d0\u4ea4\u6210\u529f\uff0c\u5df2\u4fdd\u7559\u5f53\u524d\u53d1\u5e03\u9875\u4ee5\u4fbf\u68c0\u67e5"
         )
 
+    def close_publish_page(self, publish_page: Page | None) -> None:
+        if publish_page is None:
+            return
+
+        try:
+            if not publish_page.is_closed():
+                publish_page.close()
+                self.log("\u5df2\u5173\u95ed\u5f02\u5e38\u7684\u53d1\u5e03\u9875")
+        except Exception as error:
+            self.log(f"\u5173\u95ed\u5f02\u5e38\u7684\u53d1\u5e03\u9875\u5931\u8d25: {error}")
+
     def run(self) -> None:
         self.log(f"\u5546\u54c1\u603b\u76ee\u5f55: {self.product_root_dir}")
         self.log(f"\u5df2\u51c6\u5907 {len(self.product_file_sets)} \u4e2a\u5546\u54c1\u53d1\u5e03\u8f6e\u6b21\uff0c\u5c06\u6309\u987a\u5e8f\u8fde\u7eed\u53d1\u5e03")
@@ -1634,6 +1691,7 @@ class BrowserAutomation:
 
             publish_page: Page | None = None
             round_completed = False
+            round_skipped = False
             try:
                 if index == 1:
                     self.run_step(self.open_target_page)
@@ -1644,23 +1702,50 @@ class BrowserAutomation:
                     self.log("\u590d\u7528\u9996\u8f6e\u5df2\u7b5b\u9009\u7684\u673a\u4f1a\u5546\u54c1\u9875\u9762\uff0c\u8df3\u8fc7\u9875\u7b7e\u4e0e\u7c7b\u76ee\u9009\u62e9")
                     self.run_step(self.search)
 
-                publish_page = self.run_step(self.click_random_publish_same)
-                self.run_step(self.select_publish_category, publish_page)
-                self.run_step(self.handle_publish_tips, publish_page)
-                self.run_step(self.upload_main_image, publish_page)
-                self.run_step(self.upload_product_video, publish_page)
-                self.run_step(self.fill_product_title, publish_page)
-                self.run_step(self.fill_product_attributes, publish_page)
-                self.run_step(self.use_spec_template, publish_page)
-                self.run_step(self.fill_main_style_spec_from_config, publish_page)
-                self.run_step(self.fill_color_specs_from_config, publish_page)
-                self.run_step(self.upload_detail_images, publish_page)
-                self.run_step(self.fill_supplier_info, publish_page)
-                self.run_step(self.fill_package_info, publish_page)
-                self.run_step(self.confirm_package_size_warning_if_present, publish_page)
-                self.run_step(self.upload_qualifications, publish_page)
-                self.run_step(self.publish_product_and_sign_up, publish_page)
-                round_completed = True
+                for retry_index in range(1, 4):
+                    try:
+                        publish_page = self.run_step(self.click_random_publish_same)
+                        self.run_step(self.select_publish_category, publish_page)
+                        self.run_step(self.handle_publish_tips, publish_page)
+                        self.run_step(self.upload_main_image, publish_page)
+                        self.run_step(self.upload_product_video, publish_page)
+                        self.run_step(self.fill_product_title, publish_page)
+                        self.run_step(self.fill_product_attributes, publish_page)
+                        self.run_step(self.use_spec_template, publish_page)
+                        self.run_step(self.fill_main_style_spec_from_config, publish_page)
+                        self.run_step(self.fill_color_specs_from_config, publish_page)
+                        self.run_step(self.upload_detail_images, publish_page)
+                        self.run_step(self.fill_supplier_info, publish_page)
+                        self.run_step(self.fill_package_info, publish_page)
+                        self.run_step(self.confirm_package_size_warning_if_present, publish_page)
+                        self.run_step(self.upload_qualifications, publish_page)
+                        self.run_step(self.publish_product_and_sign_up, publish_page)
+                        round_completed = True
+                        break
+                    except AutomationCancelled:
+                        raise
+                    except Exception as error:
+                        error_detail = str(error).strip() or error.__class__.__name__
+                        self.log(
+                            f"\u7b2c {retry_index}/3 \u6b21\u53d1\u5e03\u5f53\u524d\u5546\u54c1\u5931\u8d25: "
+                            f"{error_detail}"
+                        )
+                        self.close_publish_page(publish_page)
+                        publish_page = None
+
+                        if retry_index >= 3:
+                            self.log(
+                                f"\u5f53\u524d\u5546\u54c1\u5df2\u8fde\u7eed\u91cd\u8bd5 3 \u6b21\uff0c"
+                                "\u5df2\u8df3\u8fc7\u8be5\u5546\u54c1\u5e76\u7ee7\u7eed\u540e\u7eed\u5546\u54c1"
+                            )
+                            round_skipped = True
+                            break
+
+                        self.log(
+                            f"\u5c06\u5173\u95ed\u5f53\u524d\u53d1\u5e03\u9875\uff0c\u91cd\u65b0\u641c\u7d22\u5e76\u968f\u673a\u9009\u62e9"
+                            f"\u53d1\u5e03\u540c\u6b3e\uff08\u7b2c {retry_index + 1}/3 \u6b21\uff09"
+                        )
+                        self.run_step(self.search)
             finally:
                 self.cleanup_temp_files()
 
@@ -1673,7 +1758,10 @@ class BrowserAutomation:
                 except Exception as error:
                     self.log(f"\u5173\u95ed\u7b2c {index} \u8f6e\u53d1\u5e03\u6807\u7b7e\u9875\u5931\u8d25: {error}")
 
-            self.log(f"\u7b2c {index}/{len(self.product_file_sets)} \u8f6e\u53d1\u5e03\u6d41\u7a0b\u5df2\u5b8c\u6210")
+            if round_skipped:
+                self.log(f"\u7b2c {index}/{len(self.product_file_sets)} \u8f6e\u5df2\u8df3\u8fc7")
+            else:
+                self.log(f"\u7b2c {index}/{len(self.product_file_sets)} \u8f6e\u53d1\u5e03\u6d41\u7a0b\u5df2\u5b8c\u6210")
 
         self.log("\u6240\u6709\u5546\u54c1\u53d1\u5e03\u8f6e\u6b21\u5df2\u5b8c\u6210\u53d1\u5e03")
 
