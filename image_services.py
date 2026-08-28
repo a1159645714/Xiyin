@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import re
 import shutil
 import time
 from pathlib import Path
@@ -13,7 +12,21 @@ import requests
 from PIL import Image, ImageOps
 
 from ai_content_service import generate_product_content
-from config_services import get_goods_id, get_goods_name, get_goods_platform, get_goods_thumbnail_url
+from config_services import (
+    USD_TO_CNY_RATE,
+    clean_price_text,
+    convert_price_numbers,
+    extract_price_range,
+    first_value,
+    format_money,
+    get_goods_id,
+    get_goods_name,
+    get_goods_platform,
+    get_goods_thumbnail_url,
+    get_nested,
+    join_price_range,
+    normalize_url,
+)
 import importlib
 
 _ai = importlib.import_module("\u534f\u8baeAI")
@@ -24,64 +37,12 @@ edit_image_file = _ai.edit_image_file
 get_ai_model_list = _ai.get_ai_model_list
 
 OUTPUT_DIR = Path(__file__).with_name("output")
-USD_TO_CNY_RATE = __import__("decimal").Decimal("7.20")
 def normalize_thumbnail_bytes(image_bytes: bytes) -> bytes:
     with Image.open(io.BytesIO(image_bytes)) as image:
         image = image.convert("RGBA")
         output = io.BytesIO()
         image.save(output, format="PNG")
         return output.getvalue()
-
-
-def normalize_url(url: str) -> str:
-    url = str(url or "").strip()
-    if url.startswith("//"):
-        return f"https:{url}"
-    return url
-
-
-def get_nested(value: dict, path: str, default=""):
-    current = value
-    for key in path.split("."):
-        if not isinstance(current, dict):
-            return default
-        current = current.get(key)
-    return current if current not in (None, "") else default
-
-
-def first_value(goods: dict, *fields: str) -> str:
-    for field in fields:
-        value = get_nested(goods, field) if "." in field else goods.get(field)
-        if value not in (None, ""):
-            return str(value)
-    return ""
-
-
-def format_money(value: Decimal) -> str:
-    return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-
-
-def convert_price_numbers(price_text: str, rate: Decimal, multiply: bool) -> list[str]:
-    converted = []
-    for number in re.findall(r"\d+(?:\.\d+)?", price_text)[:2]:
-        try:
-            amount = Decimal(number)
-        except InvalidOperation:
-            continue
-        converted.append(format_money(amount * rate if multiply else amount / rate))
-    return converted
-
-
-def join_price_range(values: list[str]) -> str:
-    return "-".join(values) if values else ""
-
-
-def clean_price_text(price_text: str) -> str:
-    return re.sub(r"\s+", " ", str(price_text or "").strip())
-
-
-def extract_price_range(price_text: str) -> str:
-    return join_price_range(re.findall(r"\d+(?:\.\d+)?", clean_price_text(price_text))[:2])
 
 
 def sanitize_folder_name(value: str) -> str:
