@@ -548,13 +548,47 @@ class BrowserAutomation:
             for image_file in self.get_image_files(self.image_dir)
         ]
 
-        detail_upload_input = page.locator(
-            ".detail_img_container tbody td"
-        ).nth(2).locator('input[type="file"][accept*="image"]')
-        detail_upload_input.wait_for(state="attached", timeout=30000)
-        self.reveal(page.locator(".detail_img_container").last, timeout=10000)
-        detail_upload_input.set_input_files(detail_images)
-        self.log(f"\u5df2\u4e0a\u4f20\u7ec6\u8282\u56fe: {len(detail_images)} \u5f20")
+        container = page.locator(".detail_img_container").first
+        container.wait_for(state="attached", timeout=30000)
+
+        # 新版页面实际结构：表格列为 颜色/细节图/方形图/色块图。
+        # 按表头「细节图」确定列号，只使用新版入口，不再保留旧版回退。
+        header_cells = container.locator("thead th")
+        detail_index = None
+        for index in range(header_cells.count()):
+            cell = header_cells.nth(index)
+            try:
+                has_marker = cell.locator(".detail_img").count() > 0
+                has_text = "\u7ec6\u8282\u56fe" in (cell.inner_text(timeout=3000) or "")
+            except Exception:
+                continue
+            if has_marker or has_text:
+                detail_index = index
+                break
+        if detail_index is None:
+            raise RuntimeError(
+                "\u672a\u627e\u5230\u7ec6\u8282\u56fe\u5217\u8868\u5934\uff0c\u65e0\u6cd5\u5b9a\u4f4d\u65b0\u7248\u7ec6\u8282\u56fe\u4e0a\u4f20\u5165\u53e3"
+            )
+
+        detail_cell = container.locator("tbody tr").first.locator("td").nth(detail_index)
+        self.reveal(container, timeout=10000)
+
+        # 实际入口：细节图列单元格里的「点击上传」控件。每次点击打开系统文件选择器，
+        # 一次选择一张，页面会把图片累积到下一个槽位（该入口按单张处理，多张会提示“不能超过一张”）。
+        for image_index, image_file in enumerate(detail_images, start=1):
+            upload_entry = detail_cell.locator('[class*="uploadHandle"]').first
+            upload_entry.wait_for(state="attached", timeout=30000)
+            with page.expect_file_chooser(timeout=30000) as chooser_info:
+                self.visible_click(upload_entry)
+            chooser = chooser_info.value
+            chooser.set_files([image_file])
+            self.log(
+                f"\u5df2\u4e0a\u4f20\u7ec6\u8282\u56fe {image_index}/{len(detail_images)}: "
+                f"{os.path.basename(image_file)}"
+            )
+            page.wait_for_timeout(2000)
+
+        self.log(f"\u5df2\u901a\u8fc7\u7ec6\u8282\u56fe\u5217\u5165\u53e3\u5b8c\u6210\u4e0a\u4f20: {len(detail_images)} \u5f20")
 
     def get_supplier_config(self) -> dict[str, Any]:
         return self.product_config.get("\u4f9b\u65b9\u4fe1\u606f", {})
@@ -687,6 +721,8 @@ class BrowserAutomation:
 
         first_row = rows.first
         self.product_skc = self.read_product_skc_from_supplier_row(first_row)
+        if not self.product_skc:
+            self.product_skc = self.read_product_skc_from_skc_table(page)
         if self.product_skc:
             self.log(f"\u5df2\u8bfb\u53d6\u5546\u54c1 SKC: {self.product_skc}")
 
@@ -726,11 +762,19 @@ class BrowserAutomation:
             self.select_supplier_piece_type(page, row, row_index, piece_type_text)
             self.log(f"\u5df2\u9009\u62e9\u7b2c {row_index + 1} \u884c\u4ef6\u6570: {piece_type_text}")
 
-        supplier_code_inputs = table.locator('[class*="supplier_codeClass_"] input')
+        supplier_code_inputs = page.locator('[class*="supplier_codeClass_"] input')
         supplier_code_count = supplier_code_inputs.count()
+        if supplier_code_count == 0:
+            supplier_code_inputs = table.locator('[class*="supplier_codeClass_"] input')
+            supplier_code_count = supplier_code_inputs.count()
         if supplier_code_count == 0:
             raise RuntimeError("\u672a\u627e\u5230\u4f9b\u65b9\u8d27\u53f7\u8f93\u5165\u6846")
 
+        in_supply_table = table.locator('[class*="supplier_codeClass_"] input').count() > 0
+        self.log(
+            f"\u5df2\u627e\u5230 {supplier_code_count} \u4e2a\u4f9b\u65b9\u8d27\u53f7\u8f93\u5165\u6846"
+            f"\uff08{'供方信息表' if in_supply_table else '\u89c4\u683c\u4fe1\u606f SKC \u5217\u8868'}\uff09"
+        )
         for input_index in range(supplier_code_count):
             supplier_code_input = supplier_code_inputs.nth(input_index)
             self.visible_fill(supplier_code_input, self.supplier_code)
@@ -769,6 +813,16 @@ class BrowserAutomation:
             return skc_match.group(1)
 
         return ""
+
+    def read_product_skc_from_skc_table(self, page: Page) -> str:
+        """新版页面把 SKC 与供方货号一起放进了规格信息的 SKC 列表。"""
+        code_input = page.locator('[class*="supplier_codeClass_"] input').first
+        if code_input.count() == 0:
+            return ""
+        row = code_input.locator("xpath=ancestor::tr[1]").first
+        if row.count() == 0:
+            return ""
+        return self.read_product_skc_from_supplier_row(row)
 
     def select_so_option(self, page: Page, select_locator, value: str) -> None:
         self.visible_click(select_locator)
