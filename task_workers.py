@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import requests
 import threading
@@ -10,6 +11,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from ai_content_service import generate_product_content
 from aiprice_image_search import search_by_image as aiprice_search_by_image
 from automation import AutomationCancelled, BrowserAutomation
 from config import BODY_REAL_PHOTO_DIR_NAME
@@ -19,8 +21,8 @@ from config_services import (
 )
 from image_services import (
     OUTPUT_DIR, build_prompt, edit_image_file, generate_ai_crops_for_goods,
-    get_ai_model_list, get_download_referer, normalize_thumbnail_bytes,
-    save_ai_image_response,
+    get_ai_model_list, get_download_referer, get_goods_folder,
+    normalize_thumbnail_bytes, save_ai_image_response,
 )
 from product_files import ProductFiles, get_image_files
 from real_photo_library import RealPhotoVariant, scan_real_photo_library
@@ -340,6 +342,8 @@ class PublishWorker(QThread):
     ) -> ProductFiles:
         self.ensure_not_cancelled()
         goods_id = get_goods_id(goods) or f"selected_{index:02d}"
+        if not bool(self.settings.get("ai_generate_image", True)):
+            return self.prepare_direct_product_files(index, goods, root_dir, variant)
         self.log.emit(f"开始生成第 {index}/{len(self.goods_list)} 个勾选商品: {goods_id}")
         product_config = self.get_product_config_for_goods(goods)
         product_images = sorted(path for path in variant.product_image_dir.iterdir() if path.is_file())
@@ -379,6 +383,77 @@ class PublishWorker(QThread):
             root_dir=os.fspath(variant.variant_dir),
             selected_image_dir=os.fspath(crop_paths[0].parent),
             main_image_file=os.fspath(crop_paths[0]),
+            product_video_file=os.fspath(variant.video_file) if variant.video_file else "",
+            config_file=os.fspath(config_file),
+            body_photo_dir=os.fspath(variant.body_dir),
+            package_photo_dir=os.fspath(variant.package_dir) if variant.package_dir else "",
+        )
+
+    def prepare_direct_product_files(
+        self,
+        index: int,
+        goods: dict,
+        root_dir: Path,
+        variant: RealPhotoVariant,
+    ) -> ProductFiles:
+        """跳过 AI 生图，直接把实拍图库「产品图」文件夹作为详情图。"""
+        self.ensure_not_cancelled()
+        goods_id = get_goods_id(goods) or f"selected_{index:02d}"
+        self.log.emit(
+            f"开始准备第 {index}/{len(self.goods_list)} 个勾选商品"
+            f"（直传模式，跳过 AI 生图）: {goods_id}"
+        )
+        product_config = self.get_product_config_for_goods(goods)
+        image_extensions = {".jpg", ".jpeg", ".png"}
+        product_images = sorted(
+            path for path in variant.product_image_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in image_extensions
+        )
+        if not product_images:
+            raise RuntimeError(
+                f"商品 {goods_id} 的「产品图」目录没有图片: {variant.product_image_dir}"
+            )
+        main_candidates = [path for path in product_images if "主图" in path.stem]
+        main_image = (sorted(main_candidates) or product_images)[0]
+
+        goods_folder = get_goods_folder(goods)
+        goods_folder.mkdir(parents=True, exist_ok=True)
+        safe_goods = {key: value for key, value in goods.items() if not key.startswith("_")}
+        (goods_folder / "goods.json").write_text(
+            json.dumps(safe_goods, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        if bool(self.settings.get("ai_generate_title", False)):
+            try:
+                content = generate_product_content(
+                    image_path=main_image,
+                    product_name=get_goods_name(goods).strip(),
+                    goods=goods,
+                    product_config=product_config,
+                    reference_image_paths=self.collect_reference_images(variant),
+                    provider=self.settings.get("ai_chat_provider", "geeknow"),
+                    token=self.settings.get("ai_chat_token", ""),
+                    model=self.settings.get("ai_chat_model", "gpt-5.5"),
+                )
+                goods["_ai_generated_title"] = content["title"]
+                self.log.emit(f"对话模型已返回商品标题: {content['title']}")
+            except Exception as error:
+                self.log.emit(f"对话模型标题生成失败，将回退使用商品名或自定义标题: {error}")
+
+        config_file = write_round_product_config(
+            goods_folder,
+            product_config,
+            goods,
+            self.settings["title_source"],
+        )
+        self.log.emit(f"已根据UI设置生成本轮配置: {config_file}")
+        self.log.emit(f"第 {index}/{len(self.goods_list)} 个商品图片已就绪（直传模式）")
+
+        return ProductFiles(
+            root_dir=os.fspath(variant.variant_dir),
+            selected_image_dir=os.fspath(variant.product_image_dir),
+            main_image_file=os.fspath(main_image),
             product_video_file=os.fspath(variant.video_file) if variant.video_file else "",
             config_file=os.fspath(config_file),
             body_photo_dir=os.fspath(variant.body_dir),

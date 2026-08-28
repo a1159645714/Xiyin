@@ -289,10 +289,14 @@ class MainWindow(FluentWindow):
         self.ai_chat_model_fetch_button.clicked.connect(lambda: self.fetch_ai_model_list("chat"))
         self.ai_model_status_label = QLabel("可手动输入模型名")
         self.ai_chat_model_status_label = QLabel("可手动输入模型名")
+        self.ai_generate_image_checkbox = QCheckBox("AI生成商品图片")
+        self.ai_generate_image_checkbox.setChecked(True)
         self.ai_generate_title_checkbox = QCheckBox("AI生成商品标题")
         self.ai_generate_title_checkbox.setChecked(True)
         self.ai_generate_prompt_checkbox = QCheckBox("AI生成图片 PROMPT")
         self.ai_generate_prompt_checkbox.setChecked(True)
+        self.ai_generate_image_hint = QLabel("关闭后跳过 AI 生图，直接上传实拍图库「产品图」文件夹图片")
+        self.ai_generate_image_hint.setObjectName("HintLabel")
 
         config_layout.addWidget(QLabel("图片平台"), 0, 0)
         config_layout.addWidget(self.ai_provider_combo, 0, 1)
@@ -312,6 +316,8 @@ class MainWindow(FluentWindow):
         config_layout.addWidget(self.ai_chat_model_status_label, 3, 3)
         config_layout.addWidget(self.ai_generate_title_checkbox, 4, 0, 1, 2)
         config_layout.addWidget(self.ai_generate_prompt_checkbox, 4, 2, 1, 2)
+        config_layout.addWidget(self.ai_generate_image_checkbox, 5, 0, 1, 2)
+        config_layout.addWidget(self.ai_generate_image_hint, 5, 2, 1, 2)
         layout.addWidget(config_panel)
 
         test_panel = ElevatedCardWidget()
@@ -1204,6 +1210,7 @@ class MainWindow(FluentWindow):
         self.ai_chat_model_edit.setCurrentText(str(self.settings.get("ai_chat_model", "gpt-5.5")).strip() or "gpt-5.5")
         self.ai_token_edit.setText(str(self.settings.get("ai_image_token", self.settings.get("ai_token", ""))).strip())
         self.ai_chat_token_edit.setText(str(self.settings.get("ai_chat_token", "")).strip())
+        self.ai_generate_image_checkbox.setChecked(bool(self.settings.get("ai_generate_image", True)))
         self.ai_generate_title_checkbox.setChecked(bool(self.settings.get("ai_generate_title", True)))
         self.ai_generate_prompt_checkbox.setChecked(bool(self.settings.get("ai_generate_prompt", True)))
         self.viewport_width_edit.setText(str(self.settings.get("viewport_width", VIEWPORT_WIDTH)))
@@ -1260,6 +1267,7 @@ class MainWindow(FluentWindow):
             "ai_token": self.ai_token_edit.text().strip(),
             "ai_image_token": self.ai_token_edit.text().strip(),
             "ai_chat_token": self.ai_chat_token_edit.text().strip(),
+            "ai_generate_image": self.ai_generate_image_checkbox.isChecked(),
             "ai_generate_title": self.ai_generate_title_checkbox.isChecked(),
             "ai_generate_prompt": self.ai_generate_prompt_checkbox.isChecked(),
             "viewport_width": self.viewport_width_edit.text().strip(),
@@ -1362,12 +1370,18 @@ class MainWindow(FluentWindow):
     def collect_publish_settings(self) -> dict:
         product_root_dir = self.real_photo_root_edit.text().strip()
         common_mark_image_file = self.common_mark_image_edit.text().strip()
-        ai_provider, ai_model, ai_token = self.collect_ai_settings()
+        generate_image = self.ai_generate_image_checkbox.isChecked()
+        if generate_image:
+            ai_provider, ai_model, ai_token = self.collect_ai_settings()
+        else:
+            ai_provider = self.ai_provider_combo.currentData() or "geeknow"
+            ai_model = self.ai_model_edit.currentText().strip() or "gpt-image-2"
+            ai_token = self.ai_token_edit.text().strip()
         chat_provider = self.ai_chat_provider_combo.currentData() or "geeknow"
         chat_model = self.ai_chat_model_edit.currentText().strip() or "gpt-5.5"
         chat_token = self.ai_chat_token_edit.text().strip()
         generate_title = self.ai_generate_title_checkbox.isChecked()
-        generate_prompt = self.ai_generate_prompt_checkbox.isChecked()
+        generate_prompt = self.ai_generate_prompt_checkbox.isChecked() and generate_image
         if (generate_title or generate_prompt) and not chat_token:
             raise ValueError("请填写对话模型 Token，或关闭 AI 标题/PROMPT 生成")
         category_path = tuple(self.get_selected_category_path())
@@ -1412,6 +1426,7 @@ class MainWindow(FluentWindow):
             "ai_chat_token": chat_token,
             "ai_generate_title": generate_title,
             "ai_generate_prompt": generate_prompt,
+            "ai_generate_image": generate_image,
             "viewport_width": width,
             "viewport_height": height,
             "upload_rounds": upload_rounds,
